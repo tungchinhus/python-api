@@ -1,0 +1,33 @@
+# Requirements cho RAG System
+# Cài đặt: pip install -r requirements_rag.txt
+
+# FastAPI và server
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6  # Cần cho form data
+
+# LangChain và Google Gemini
+langchain>=0.1.0
+langchain-google-genai>=0.0.6
+langchain-community>=0.0.10
+
+# PDF Processing
+pypdf>=3.17.0
+
+# Vector Store
+chromadb>=0.4.18
+
+# SQL Server support (cho SQL Server vector)
+pyodbc>=5.0.0
+requests>=2.31.0  # Cho Python API embedding (nếu không dùng SQL embeddings)
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Utilities
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Dependencies cho ChromaDB và embeddings
+numpy>=1.24.0
+sentencepiece>=0.1.99  # Cần cho một số embedding models

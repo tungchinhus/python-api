@@ -1,0 +1,46 @@
+# Google Gemini API Key
+# Lấy từ: https://makersuite.google.com/app/apikey
+# Copy file này thành .env và điền API key của bạn
+# Hỗ trợ cả GOOGLE_API_KEY và GEMINI_API_KEY (Firebase Functions)
+GOOGLE_API_KEY=your_google_api_key_here
+# Hoặc dùng GEMINI_API_KEY (nếu đã có trong Firebase Functions)
+# GEMINI_API_KEY=your_gemini_api_key_here
+
+# Thư mục chứa PDF files (mặc định: ./data)
+DATA_DIR=./data
+
+# Thư mục lưu ChromaDB (mặc định: ./db)
+DB_DIR=./db
+
+# Cấu hình chunking (mặc định: 1000, 100)
+CHUNK_SIZE=1000
+CHUNK_OVERLAP=100
+
+# Port cho FastAPI server (mặc định: 8000)
+PORT=8000
+
+# ============================================
+# SQL Server Configuration (cho RAG với SQL Server Vector)
+# ============================================
+# Option 1: Full connection string
+# SQL_CONNECTION_STRING=DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost;DATABASE=THITHI_AI;Trusted_Connection=yes;TrustServerCertificate=yes;
+
+# Option 2: Individual settings
+SQL_SERVER=localhost
+SQL_DATABASE=THITHI_AI
+SQL_TRUSTED_CONNECTION=yes
+# SQL_USERNAME=your_username
+# SQL_PASSWORD=your_password
+
+# RAG Table name trong SQL Server
+RAG_TABLE_NAME=rag_documents
+
+# Embedding Configuration
+# Nếu USE_SQL_EMBEDDINGS=true: Dùng AI_GENERATE_EMBEDDINGS của SQL Server 2025
+# Nếu USE_SQL_EMBEDDINGS=false: Dùng Python API để vectorize
+USE_SQL_EMBEDDINGS=false
+EMBEDDING_MODEL_NAME=local_onnx_embeddings
+EMBEDDING_DIMENSION=384
+
+# Python API URL (nếu không dùng SQL embeddings)
+PYTHON_API_URL=http://localhost:5005/vectorize
