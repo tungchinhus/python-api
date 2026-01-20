@@ -32,25 +32,90 @@ venv.bak/
 virtualenv/
 .virtualenv/
 
-# PyCharm
-.idea/
-*.iml
-*.iws
-*.ipr
-
-# VS Code
-.vscode/
-*.code-workspace
-
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb
+# C# / .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.csproj.user
+*.csproj.vspscc
+*.vspscc
+*.vssscc
+.builds/
+*.pidb
+*.svclog
+*.scc
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa]rm/
+[Aa]rm64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+*.dll
+*.exe
+*.pdb
+*.cache
+*.ilk
+*.meta
+*.obj
+*.iobj
+*.pch
+*.pdb
+*.ipdb
+*.pgc
+*.pgd
+*.rsp
+*.sbr
+*.tlb
+*.tli
+*.tlh
+*.tmp
+*.tmp_proj
+*.log
+*.vspscc
+*.vssscc
+.builds
+*.pidb
+*.svclog
+*.scc
+_UpgradeReport_Files/
+Backup*/
+UpgradeLog*.XML
+UpgradeLog*.htm
+ServiceFabricBackup/
+*.pfx
+*.publishsettings
+*.pubxml
+*.publishproj
+*.msbuild
+*.msbuild.bak
+*.nupkg
+*.snupkg
+packages/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+project.fragment.lock.json
+artifacts/
 
 # Environment variables
 .env
 .env.local
 .env.*.local
 *.env
+
+# Configuration files with sensitive data (uncomment if needed)
+# appsettings.json
+# appsettings.*.json
+# !appsettings.json.example
+# !appsettings.Development.json.example
 
 # Logs
 *.log
@@ -66,14 +131,34 @@ logs/
 ehthumbs.db
 Thumbs.db
 desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
 
-# Model files (if large, uncomment if needed)
-# *.pkl
-# *.h5
-# *.pt
-# *.pth
-# models/
-# checkpoints/
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# PyCharm
+*.iml
+*.iws
+*.ipr
+
+# VS Code
+*.code-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
 
 # Database
 *.db
@@ -83,9 +168,6 @@ desktop.ini
 # Temporary files
 *.tmp
 *.temp
-*.swp
-*.swo
-*~
 .cache/
 
 # Coverage reports
@@ -93,19 +175,16 @@ htmlcov/
 .tox/
 .coverage
 .coverage.*
-.cache
 nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
 
-# mypy
+# Type checkers
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# Pyre type checker
 .pyre/
 
 # Flask
@@ -117,30 +196,7 @@ instance/
 
 # Sphinx documentation
 docs/_build/
-
-# Unit test / coverage reports
-.pytest_cache/
-.hypothesis/
-
-# Translations
-*.mo
-*.pot
-
-# Django
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask
-instance/
-.webassets-cache
-
-# Scrapy
-.scrapy
-
-# Sphinx documentation
-docs/_build/
+/site
 
 # PyBuilder
 target/
@@ -159,9 +215,6 @@ celerybeat.pid
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
-
 # pyenv
 .python-version
 
@@ -171,29 +224,29 @@ Pipfile.lock
 # PEP 582
 __pypackages__/
 
-# Celery
-celerybeat-schedule
-celerybeat.pid
+# Model files (uncomment if needed for large files)
+# *.pkl
+# *.h5
+# *.pt
+# *.pth
+# models/
+# checkpoints/
 
-# SageMath parsed files
-*.sage.py
+# Translations
+*.mo
+*.pot
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+# Django (if used)
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
 
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
+# Windows specific
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
