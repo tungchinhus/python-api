@@ -40,7 +40,7 @@ RAG_TABLE_NAME=rag_documents
 # Nếu USE_SQL_EMBEDDINGS=false: Dùng Python API để vectorize
 USE_SQL_EMBEDDINGS=false
 EMBEDDING_MODEL_NAME=local_onnx_embeddings
-EMBEDDING_DIMENSION=384
+EMBEDDING_DIMENSION=768
 
 # Python API URL (nếu không dùng SQL embeddings)
 PYTHON_API_URL=http://localhost:5005/vectorize

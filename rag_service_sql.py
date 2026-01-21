@@ -34,7 +34,7 @@ class RAGServiceSQL:
         api_key: Optional[str] = None,
         chunk_size: int = 1000,
         chunk_overlap: int = 100,
-        embedding_dimension: int = 384,
+        embedding_dimension: int = 768,
         use_sql_embeddings: bool = False,
         embedding_model_name: str = "local_onnx_embeddings"
     ):
@@ -48,7 +48,7 @@ class RAGServiceSQL:
             api_key: Google Gemini API key (cho LLM, không dùng cho embedding nếu use_sql_embeddings=True)
             chunk_size: Kích thước mỗi chunk (ký tự)
             chunk_overlap: Số ký tự overlap giữa các chunks
-            embedding_dimension: Dimension của embedding vector (384 cho ONNX models thông thường)
+            embedding_dimension: Dimension của embedding vector (768 cho all-mpnet-base-v2)
             use_sql_embeddings: Nếu True, dùng AI_GENERATE_EMBEDDINGS của SQL Server. Nếu False, dùng Python API
             embedding_model_name: Tên EXTERNAL MODEL trong SQL Server (nếu use_sql_embeddings=True)
         """

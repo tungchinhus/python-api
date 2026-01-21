@@ -23,7 +23,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-**Lưu ý:** Lần đầu cài đặt sẽ download model `paraphrase-multilingual-MiniLM-L12-v2` (khoảng 400MB), có thể mất vài phút.
+**Lưu ý:** Lần đầu cài đặt sẽ download model `all-mpnet-base-v2` (khoảng 420MB), có thể mất vài phút.
 
 ### 3. Chạy server
 
@@ -57,7 +57,7 @@ Vectorize text thành embeddings.
     [0.4, 0.5, 0.6, ...]
   ],
   "count": 2,
-  "dimension": 384
+  "dimension": 768
 }
 ```
 
@@ -76,10 +76,10 @@ Kiểm tra service hoạt động.
 
 ## Model sử dụng
 
-- **Model:** `paraphrase-multilingual-MiniLM-L12-v2`
-- **Dimension:** 384
-- **Hỗ trợ:** 50+ ngôn ngữ bao gồm tiếng Việt
-- **Size:** ~400MB (download tự động lần đầu)
+- **Model:** `all-mpnet-base-v2`
+- **Dimension:** 768
+- **Hỗ trợ:** Tiếng Anh và nhiều ngôn ngữ khác
+- **Size:** ~420MB (download tự động lần đầu)
 
 ## Troubleshooting
 
@@ -110,8 +110,9 @@ model = SentenceTransformer('tên-model-khác')
 ```
 
 Một số model phổ biến:
-- `paraphrase-multilingual-MiniLM-L12-v2` - Hỗ trợ đa ngôn ngữ, nhẹ (384 dim)
-- `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` - Tốt hơn nhưng nặng hơn (768 dim)
+- `all-mpnet-base-v2` - Model hiện tại, chất lượng cao (768 dim) ✅
+- `paraphrase-multilingual-MiniLM-L12-v2` - Hỗ trợ đa ngôn ngữ, nhẹ hơn (384 dim)
+- `paraphrase-multilingual-mpnet-base-v2` - Hỗ trợ đa ngôn ngữ, chất lượng cao (768 dim)
 - `keepitreal/vietnamese-sbert` - Tối ưu cho tiếng Việt
 
 ### Đổi port

@@ -74,7 +74,7 @@ def get_rag_service() -> RAGServiceSQL:
         # Cấu hình embedding
         use_sql_embeddings = os.getenv("USE_SQL_EMBEDDINGS", "false").lower() == "true"
         embedding_model_name = os.getenv("EMBEDDING_MODEL_NAME", "local_onnx_embeddings")
-        embedding_dimension = int(os.getenv("EMBEDDING_DIMENSION", "384"))
+        embedding_dimension = int(os.getenv("EMBEDDING_DIMENSION", "768"))
         
         rag_service = RAGServiceSQL(
             connection_string=connection_string,
