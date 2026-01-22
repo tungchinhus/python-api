@@ -369,18 +369,26 @@ class RAGServiceSQL:
             "files": list(file_names)
         }
     
-    def chat(self, query: str, top_k: int = 4) -> Dict[str, Any]:
+    def search_suggestions(
+        self, 
+        query: str, 
+        top_k: int = 10, 
+        similarity_threshold: float = 0.5,
+        min_suggestions: int = 2
+    ) -> Dict[str, Any]:
         """
-        Nhận query từ user, tìm kiếm và generate answer
+        Tìm kiếm và trả về danh sách suggestions (gợi ý) khi có nhiều kết quả khớp
         
         Args:
             query: Câu hỏi của user
-            top_k: Số lượng chunks liên quan nhất để lấy
+            top_k: Số lượng kết quả tối đa để lấy
+            similarity_threshold: Ngưỡng similarity tối thiểu (0.0 - 1.0)
+            min_suggestions: Số lượng suggestions tối thiểu để hiển thị
             
         Returns:
-            Dict chứa answer và sources
+            Dict chứa suggestions và metadata
         """
-        logger.info(f"Nhận query: {query}")
+        logger.info(f"Tìm kiếm suggestions cho query: {query}")
         
         # Bước 1: Generate embedding cho query
         if self.use_sql_embeddings:
@@ -393,8 +401,8 @@ class RAGServiceSQL:
         if not query_vector:
             return {
                 "error": "Không thể generate embedding cho query",
-                "answer": None,
-                "sources": []
+                "suggestions": [],
+                "total_found": 0
             }
         
         # Bước 2: Tìm kiếm trong SQL Server
@@ -413,10 +421,12 @@ class RAGServiceSQL:
             # Format query vector
             vector_string = "[" + ",".join(str(v) for v in query_vector) + "]"
             
+            all_results = []
+            
             if has_vector_column:
-                # Sử dụng VECTOR_DISTANCE
+                # Sử dụng VECTOR_DISTANCE - lấy nhiều kết quả hơn để filter
                 sql = f"""
-                SELECT TOP ({top_k})
+                SELECT TOP ({top_k * 2})
                     ID,
                     Content,
                     FileName,
@@ -428,22 +438,225 @@ class RAGServiceSQL:
                 ORDER BY VECTOR_DISTANCE(Embedding, CAST(? AS VECTOR({self.embedding_dimension})), COSINE) ASC
                 """
                 cursor.execute(sql, (vector_string, vector_string))
+                
+                for row in cursor.fetchall():
+                    similarity = float(row[5]) if row[5] else 0.0
+                    if similarity >= similarity_threshold:
+                        all_results.append({
+                            "id": row[0],
+                            "content": row[1],
+                            "file_name": row[2] or "unknown",
+                            "page_number": row[3] or 0,
+                            "chunk_index": row[4] or 0,
+                            "similarity": similarity
+                        })
             else:
                 # Fallback: Tính cosine similarity trong Python
-                # Lấy tất cả vectors và tính similarity
                 cursor.execute(f"""
                     SELECT ID, Content, VectorJson, FileName, PageNumber, ChunkIndex
                     FROM dbo.[{self.table_name}]
                     WHERE VectorJson IS NOT NULL
                 """)
                 
-                all_results = []
                 for row in cursor.fetchall():
                     try:
                         vector = json.loads(row[2]) if row[2] else []
                         if vector:
                             similarity = self._cosine_similarity(query_vector, vector)
-                            all_results.append({
+                            if similarity >= similarity_threshold:
+                                all_results.append({
+                                    "id": row[0],
+                                    "content": row[1],
+                                    "file_name": row[3] or "unknown",
+                                    "page_number": row[4] or 0,
+                                    "chunk_index": row[5] or 0,
+                                    "similarity": similarity
+                                })
+                    except:
+                        continue
+                
+                # Sort theo similarity
+                all_results.sort(key=lambda x: x["similarity"], reverse=True)
+                all_results = all_results[:top_k]
+        
+        # Tạo suggestions
+        suggestions = []
+        for i, result in enumerate(all_results, 1):
+            content_preview = result["content"][:300] + "..." if len(result["content"]) > 300 else result["content"]
+            suggestions.append({
+                "index": i,
+                "id": result["id"],
+                "content": result["content"],
+                "content_preview": content_preview,
+                "file_name": result["file_name"],
+                "page_number": result["page_number"] + 1,
+                "similarity": round(result["similarity"], 4),
+                "similarity_percent": round(result["similarity"] * 100, 2)
+            })
+        
+        # Kiểm tra xem có đủ suggestions không
+        has_multiple_suggestions = len(suggestions) >= min_suggestions
+        
+        return {
+            "query": query,
+            "suggestions": suggestions,
+            "total_found": len(suggestions),
+            "has_multiple_suggestions": has_multiple_suggestions,
+            "similarity_threshold": similarity_threshold,
+            "message": f"Tìm thấy {len(suggestions)} kết quả khớp" if suggestions else "Không tìm thấy kết quả nào"
+        }
+    
+    def chat(
+        self, 
+        query: str, 
+        top_k: int = 4, 
+        similarity_threshold: float = 0.5,
+        return_suggestions: bool = True,
+        selected_suggestion_ids: Optional[List[int]] = None,
+        table_name: Optional[str] = None,
+        search_multiple_tables: bool = False,
+        table_names: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Nhận query từ user, tìm kiếm và generate answer
+        
+        Args:
+            query: Câu hỏi của user
+            top_k: Số lượng chunks liên quan nhất để lấy
+            similarity_threshold: Ngưỡng similarity tối thiểu (0.0 - 1.0)
+            return_suggestions: Nếu True, trả về suggestions khi có nhiều kết quả khớp
+            selected_suggestion_ids: Danh sách ID của suggestions được chọn (nếu có)
+            table_name: Tên bảng cụ thể để tìm (nếu None, dùng self.table_name)
+            search_multiple_tables: Nếu True, tìm trong nhiều bảng
+            table_names: Danh sách tên bảng để tìm (nếu search_multiple_tables=True)
+            
+        Returns:
+            Dict chứa answer, sources, và suggestions (nếu có)
+        """
+        # Xác định bảng để tìm
+        if table_name:
+            search_table = table_name
+        elif search_multiple_tables and table_names:
+            # Tìm trong nhiều bảng, gộp kết quả
+            return self._chat_multiple_tables(
+                query=query,
+                table_names=table_names,
+                top_k=top_k,
+                similarity_threshold=similarity_threshold,
+                return_suggestions=return_suggestions,
+                selected_suggestion_ids=selected_suggestion_ids
+            )
+        else:
+            search_table = self.table_name
+        
+        logger.info(f"Nhận query: {query}, tìm trong bảng: {search_table}")
+        
+        # Bước 1: Generate embedding cho query
+        if self.use_sql_embeddings:
+            query_embeddings = self._generate_embeddings_sql([query])
+            query_vector = query_embeddings[0] if query_embeddings else []
+        else:
+            query_embeddings = self._generate_embeddings_python([query])
+            query_vector = query_embeddings[0] if query_embeddings else []
+        
+        if not query_vector:
+            return {
+                "error": "Không thể generate embedding cho query",
+                "answer": None,
+                "sources": [],
+                "suggestions": []
+            }
+        
+        # Bước 2: Tìm kiếm trong SQL Server
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Kiểm tra bảng có tồn tại không
+            try:
+                cursor.execute(f"""
+                    SELECT COUNT(*) 
+                    FROM INFORMATION_SCHEMA.TABLES 
+                    WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = '{search_table}'
+                """)
+                table_exists = cursor.fetchone()[0] > 0
+            except Exception as e:
+                logger.error(f"Lỗi khi kiểm tra bảng: {e}")
+                table_exists = False
+            
+            if not table_exists:
+                return {
+                    "error": f"Bảng '{search_table}' không tồn tại trong database",
+                    "answer": f"Tôi không tìm thấy bảng '{search_table}' trong database. Vui lòng kiểm tra lại tên bảng.",
+                    "sources": [],
+                    "query": query,
+                    "suggestions": None,
+                    "no_results": True
+                }
+            
+            # Kiểm tra có VECTOR column không
+            try:
+                cursor.execute(f"""
+                    SELECT COUNT(*) 
+                    FROM sys.columns 
+                    WHERE object_id = OBJECT_ID('dbo.[{search_table}]') 
+                    AND name = 'Embedding'
+                """)
+                has_vector_column = cursor.fetchone()[0] > 0
+            except Exception as e:
+                logger.warning(f"Lỗi khi kiểm tra VECTOR column: {e}")
+                has_vector_column = False
+            
+            # Format query vector
+            vector_string = "[" + ",".join(str(v) for v in query_vector) + "]"
+            
+            # Nếu có selected_suggestion_ids, chỉ lấy những kết quả đó
+            if selected_suggestion_ids and len(selected_suggestion_ids) > 0 and has_vector_column:
+                    # Lấy kết quả theo IDs đã chọn
+                    placeholders = ",".join("?" for _ in selected_suggestion_ids)
+                    sql = f"""
+                    SELECT 
+                        ID,
+                        Content,
+                        FileName,
+                        PageNumber,
+                        ChunkIndex,
+                        (1.0 - VECTOR_DISTANCE(Embedding, CAST(? AS VECTOR({self.embedding_dimension})), COSINE)) AS Similarity
+                    FROM dbo.[{search_table}]
+                    WHERE Embedding IS NOT NULL AND ID IN ({placeholders})
+                    ORDER BY VECTOR_DISTANCE(Embedding, CAST(? AS VECTOR({self.embedding_dimension})), COSINE) ASC
+                    """
+                    cursor.execute(sql, (vector_string, *selected_suggestion_ids, vector_string))
+            elif has_vector_column:
+                # Sử dụng VECTOR_DISTANCE - lấy nhiều hơn để check suggestions
+                sql = f"""
+                SELECT TOP ({top_k * 2})
+                    ID,
+                    Content,
+                    FileName,
+                    PageNumber,
+                    ChunkIndex,
+                    (1.0 - VECTOR_DISTANCE(Embedding, CAST(? AS VECTOR({self.embedding_dimension})), COSINE)) AS Similarity
+                FROM dbo.[{search_table}]
+                WHERE Embedding IS NOT NULL
+                ORDER BY VECTOR_DISTANCE(Embedding, CAST(? AS VECTOR({self.embedding_dimension})), COSINE) ASC
+                """
+                cursor.execute(sql, (vector_string, vector_string))
+            else:
+                # Fallback: Tính cosine similarity trong Python
+                # Lấy tất cả vectors và tính similarity
+                cursor.execute(f"""
+                    SELECT ID, Content, VectorJson, FileName, PageNumber, ChunkIndex
+                    FROM dbo.[{search_table}]
+                    WHERE VectorJson IS NOT NULL
+                """)
+                
+                all_fetched_results = []
+                for row in cursor.fetchall():
+                    try:
+                        vector = json.loads(row[2]) if row[2] else []
+                        if vector:
+                            similarity = self._cosine_similarity(query_vector, vector)
+                            all_fetched_results.append({
                                 "id": row[0],
                                 "content": row[1],
                                 "file_name": row[3] or "unknown",
@@ -454,30 +667,52 @@ class RAGServiceSQL:
                     except:
                         continue
                 
-                # Sort và lấy top_k
-                all_results.sort(key=lambda x: x["similarity"], reverse=True)
-                top_results = all_results[:top_k]
+                # Filter theo similarity threshold và sort
+                filtered_results = [r for r in all_fetched_results if r["similarity"] >= similarity_threshold]
+                filtered_results.sort(key=lambda x: x["similarity"], reverse=True)
                 
-                # Format để dùng tiếp
-                results = []
-                for r in top_results:
-                    cursor.execute(f"""
-                        SELECT ID, Content, FileName, PageNumber, ChunkIndex
-                        FROM dbo.[{self.table_name}]
-                        WHERE ID = ?
-                    """, (r["id"],))
-                    row = cursor.fetchone()
-                    if row:
-                        results.append({
-                            "id": row[0],
-                            "content": row[1],
-                            "file_name": row[2] or "unknown",
-                            "page_number": row[3] or 0,
-                            "chunk_index": row[4] or 0,
-                            "similarity": r["similarity"]
+                # Nếu có selected_suggestion_ids, chỉ lấy những kết quả đó
+                if selected_suggestion_ids and len(selected_suggestion_ids) > 0:
+                    results = [r for r in filtered_results if r["id"] in selected_suggestion_ids]
+                else:
+                    results = filtered_results[:top_k]
+                
+                # Kiểm tra xem có nhiều kết quả khớp không (để trả về suggestions)
+                has_multiple_matches = len(filtered_results) >= 3
+                suggestions_data = None
+                
+                if return_suggestions and has_multiple_matches and not selected_suggestion_ids:
+                    # Tạo suggestions từ các kết quả tìm được
+                    suggestions_list = []
+                    for i, result in enumerate(filtered_results[:10], 1):  # Tối đa 10 suggestions
+                        content_preview = result["content"][:200] + "..." if len(result["content"]) > 200 else result["content"]
+                        suggestions_list.append({
+                            "index": i,
+                            "id": result["id"],
+                            "content_preview": content_preview,
+                            "file_name": result["file_name"],
+                            "page_number": result["page_number"] + 1,
+                            "similarity": round(result["similarity"], 4),
+                            "similarity_percent": round(result["similarity"] * 100, 2)
                         })
+                    
+                    suggestions_data = {
+                        "has_suggestions": True,
+                        "total_available": len(filtered_results),
+                        "suggestions": suggestions_list,
+                        "message": f"Tìm thấy {len(filtered_results)} kết quả khớp. Bạn có thể chọn các kết quả cụ thể để xem chi tiết."
+                    }
                 
                 # Generate answer với context
+                if not results:
+                    return {
+                        "answer": "Tôi không tìm thấy thông tin liên quan đến câu hỏi của bạn trong tài liệu.",
+                        "sources": [],
+                        "query": query,
+                        "suggestions": suggestions_data,
+                        "no_results": True
+                    }
+                
                 context = "\n\n".join([f"[{r['file_name']}, trang {r['page_number']+1}]: {r['content']}" 
                                       for r in results])
                 
@@ -505,30 +740,81 @@ Câu trả lời:"""
                 answer = chain.invoke({"context": context, "question": query})
                 
                 sources = [{
+                    "id": r["id"],
                     "file_name": r["file_name"],
                     "page_number": r["page_number"] + 1,
-                    "content_preview": r["content"][:200] + "..." if len(r["content"]) > 200 else r["content"]
+                    "content_preview": r["content"][:200] + "..." if len(r["content"]) > 200 else r["content"],
+                    "similarity": round(r["similarity"], 4)
                 } for r in results]
                 
                 return {
                     "answer": answer.content if hasattr(answer, 'content') else str(answer),
                     "sources": sources,
-                    "query": query
+                    "query": query,
+                    "suggestions": suggestions_data,
+                    "total_sources": len(sources)
                 }
             
             # Nếu có VECTOR column, dùng kết quả từ SQL
-            results = []
-            for row in cursor.fetchall():
-                results.append({
-                    "id": row[0],
-                    "content": row[1],
-                    "file_name": row[2] or "unknown",
-                    "page_number": row[3] or 0,
-                    "chunk_index": row[4] or 0,
-                    "similarity": row[5]
-                })
+            all_fetched_results = []
+            try:
+                for row in cursor.fetchall():
+                    if len(row) < 6:
+                        continue
+                    similarity = float(row[5]) if row[5] is not None else 0.0
+                    all_fetched_results.append({
+                        "id": row[0],
+                        "content": row[1] or "",
+                        "file_name": row[2] or "unknown",
+                        "page_number": row[3] or 0,
+                        "chunk_index": row[4] or 0,
+                        "similarity": similarity
+                    })
+            except Exception as e:
+                logger.error(f"Lỗi khi xử lý kết quả từ SQL: {e}")
+                all_fetched_results = []
+            
+            # Filter theo similarity threshold và lấy top_k
+            filtered_results = [r for r in all_fetched_results if r["similarity"] >= similarity_threshold]
+            filtered_results.sort(key=lambda x: x["similarity"], reverse=True)
+            results = filtered_results[:top_k]
+            
+            # Kiểm tra xem có nhiều kết quả khớp không (để trả về suggestions)
+            has_multiple_matches = len(filtered_results) >= 3  # Có ít nhất 3 kết quả khớp
+            suggestions_data = None
+            
+            if return_suggestions and has_multiple_matches and not selected_suggestion_ids:
+                # Tạo suggestions từ các kết quả tìm được
+                suggestions_list = []
+                for i, result in enumerate(filtered_results[:10], 1):  # Tối đa 10 suggestions
+                    content_preview = result["content"][:200] + "..." if len(result["content"]) > 200 else result["content"]
+                    suggestions_list.append({
+                        "index": i,
+                        "id": result["id"],
+                        "content_preview": content_preview,
+                        "file_name": result["file_name"],
+                        "page_number": result["page_number"] + 1,
+                        "similarity": round(result["similarity"], 4),
+                        "similarity_percent": round(result["similarity"] * 100, 2)
+                    })
+                
+                suggestions_data = {
+                    "has_suggestions": True,
+                    "total_available": len(filtered_results),
+                    "suggestions": suggestions_list,
+                    "message": f"Tìm thấy {len(filtered_results)} kết quả khớp. Bạn có thể chọn các kết quả cụ thể để xem chi tiết."
+                }
         
         # Bước 3: Generate answer với context
+        if not results:
+            return {
+                "answer": "Tôi không tìm thấy thông tin liên quan đến câu hỏi của bạn trong tài liệu.",
+                "sources": [],
+                "query": query,
+                "suggestions": suggestions_data,
+                "no_results": True
+            }
+        
         context = "\n\n".join([f"[{r['file_name']}, trang {r['page_number']+1}]: {r['content']}" 
                               for r in results])
         
@@ -556,15 +842,19 @@ Câu trả lời:"""
         answer = chain.invoke({"context": context, "question": query})
         
         sources = [{
+            "id": r["id"],
             "file_name": r["file_name"],
             "page_number": r["page_number"] + 1,
-            "content_preview": r["content"][:200] + "..." if len(r["content"]) > 200 else r["content"]
+            "content_preview": r["content"][:200] + "..." if len(r["content"]) > 200 else r["content"],
+            "similarity": round(r["similarity"], 4)
         } for r in results]
         
         return {
             "answer": answer.content if hasattr(answer, 'content') else str(answer),
             "sources": sources,
-            "query": query
+            "query": query,
+            "suggestions": suggestions_data,
+            "total_sources": len(sources)
         }
     
     def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:

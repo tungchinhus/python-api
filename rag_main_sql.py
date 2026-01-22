@@ -95,13 +95,42 @@ def get_rag_service() -> RAGServiceSQL:
 class ChatRequest(BaseModel):
     """Request model cho /chat endpoint"""
     query: str = Field(..., description="Câu hỏi của user", min_length=1, max_length=1000)
+    top_k: Optional[int] = Field(4, description="Số lượng kết quả tối đa", ge=1, le=20)
+    similarity_threshold: Optional[float] = Field(0.5, description="Ngưỡng similarity tối thiểu", ge=0.0, le=1.0)
+    return_suggestions: Optional[bool] = Field(True, description="Trả về suggestions khi có nhiều kết quả")
+    selected_suggestion_ids: Optional[List[int]] = Field(None, description="Danh sách ID của suggestions được chọn")
+    table_name: Optional[str] = Field(None, description="Tên bảng cụ thể để tìm (nếu None, dùng RAG_TABLE_NAME)")
+    search_multiple_tables: Optional[bool] = Field(False, description="Tìm trong nhiều bảng")
+    table_names: Optional[List[str]] = Field(None, description="Danh sách tên bảng để tìm (nếu search_multiple_tables=True)")
     
     class Config:
         json_schema_extra = {
             "example": {
-                "query": "Máy bơm có công suất bao nhiêu?"
+                "query": "Máy bơm có công suất bao nhiêu?",
+                "top_k": 4,
+                "similarity_threshold": 0.5,
+                "return_suggestions": True
             }
         }
+
+
+class SuggestionItem(BaseModel):
+    """Model cho một suggestion item"""
+    index: int
+    id: int
+    content_preview: str
+    file_name: str
+    page_number: int
+    similarity: float
+    similarity_percent: float
+
+
+class SuggestionsData(BaseModel):
+    """Model cho suggestions data"""
+    has_suggestions: bool
+    total_available: int
+    suggestions: List[SuggestionItem]
+    message: str
 
 
 class ChatResponse(BaseModel):
@@ -110,6 +139,28 @@ class ChatResponse(BaseModel):
     sources: List[Dict[str, Any]] = Field(..., description="Danh sách sources (file name, page number)")
     query: str = Field(..., description="Câu hỏi gốc")
     error: Optional[str] = Field(None, description="Lỗi nếu có")
+    suggestions: Optional[SuggestionsData] = Field(None, description="Suggestions nếu có nhiều kết quả khớp")
+    total_sources: Optional[int] = Field(None, description="Tổng số sources")
+    no_results: Optional[bool] = Field(False, description="Không tìm thấy kết quả")
+
+
+class SuggestionsRequest(BaseModel):
+    """Request model cho /chat/suggestions endpoint"""
+    query: str = Field(..., description="Câu hỏi của user", min_length=1, max_length=1000)
+    top_k: Optional[int] = Field(10, description="Số lượng suggestions tối đa", ge=1, le=20)
+    similarity_threshold: Optional[float] = Field(0.5, description="Ngưỡng similarity tối thiểu", ge=0.0, le=1.0)
+    min_suggestions: Optional[int] = Field(2, description="Số lượng suggestions tối thiểu để hiển thị", ge=1)
+
+
+class SuggestionsResponse(BaseModel):
+    """Response model cho /chat/suggestions endpoint"""
+    query: str
+    suggestions: List[SuggestionItem]
+    total_found: int
+    has_multiple_suggestions: bool
+    similarity_threshold: float
+    message: str
+    error: Optional[str] = None
 
 
 class IngestResponse(BaseModel):
@@ -141,7 +192,8 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "ingest": "POST /ingest - Ingest PDF files into SQL Server",
-            "chat": "POST /chat - Chat with RAG system",
+            "chat": "POST /chat - Chat with RAG system (with suggestions support)",
+            "chat_suggestions": "POST /chat/suggestions - Get suggestions for query",
             "health": "GET /health - Health check"
         }
     }
@@ -171,6 +223,62 @@ async def health():
             data_dir=os.getenv("DATA_DIR", "./data"),
             table_name=os.getenv("RAG_TABLE_NAME", "rag_documents"),
             use_sql_embeddings=False
+        )
+
+
+@app.post("/chat/suggestions", tags=["RAG"], response_model=SuggestionsResponse)
+async def get_suggestions(request: SuggestionsRequest):
+    """
+    Suggestions endpoint - Trả về danh sách suggestions khi có nhiều kết quả khớp
+    Cho phép user chọn suggestions cụ thể trước khi generate answer
+    """
+    try:
+        logger.info(f"Nhận request suggestions: {request.query}")
+        service = get_rag_service()
+        
+        result = service.search_suggestions(
+            query=request.query,
+            top_k=request.top_k or 10,
+            similarity_threshold=request.similarity_threshold or 0.5,
+            min_suggestions=request.min_suggestions or 2
+        )
+        
+        if "error" in result:
+            return SuggestionsResponse(
+                query=request.query,
+                suggestions=[],
+                total_found=0,
+                has_multiple_suggestions=False,
+                similarity_threshold=request.similarity_threshold or 0.5,
+                message=result.get("error", ""),
+                error=result.get("error")
+            )
+        
+        suggestions = [
+            SuggestionItem(**s) for s in result.get("suggestions", [])
+        ]
+        
+        return SuggestionsResponse(
+            query=result.get("query", request.query),
+            suggestions=suggestions,
+            total_found=result.get("total_found", 0),
+            has_multiple_suggestions=result.get("has_multiple_suggestions", False),
+            similarity_threshold=result.get("similarity_threshold", 0.5),
+            message=result.get("message", ""),
+            error=None
+        )
+        
+    except ValueError as e:
+        logger.error(f"Value error: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Lỗi khi xử lý suggestions: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Lỗi khi xử lý: {str(e)}"
         )
 
 
@@ -214,26 +322,55 @@ async def chat(request: ChatRequest):
     """
     Chat endpoint - Nhận query và trả về answer với sources
     Sử dụng SQL Server VECTOR_DISTANCE để tìm kiếm semantic
+    Hỗ trợ suggestions khi có nhiều kết quả khớp
     """
     try:
-        logger.info(f"Nhận query: {request.query}")
+        logger.info(f"Nhận query: {request.query}, top_k={request.top_k}, threshold={request.similarity_threshold}")
         service = get_rag_service()
         
-        result = service.chat(request.query)
+        result = service.chat(
+            query=request.query,
+            top_k=request.top_k or 4,
+            similarity_threshold=request.similarity_threshold or 0.5,
+            return_suggestions=request.return_suggestions if request.return_suggestions is not None else True,
+            selected_suggestion_ids=request.selected_suggestion_ids,
+            table_name=request.table_name,
+            search_multiple_tables=request.search_multiple_tables or False,
+            table_names=request.table_names
+        )
         
         if "error" in result:
             return ChatResponse(
                 answer=result.get("answer", ""),
                 sources=result.get("sources", []),
                 query=request.query,
-                error=result.get("error")
+                error=result.get("error"),
+                suggestions=None,
+                total_sources=0,
+                no_results=False
+            )
+        
+        # Convert suggestions dict to SuggestionsData if exists
+        suggestions_data = None
+        if result.get("suggestions"):
+            suggestions_dict = result["suggestions"]
+            suggestions_data = SuggestionsData(
+                has_suggestions=suggestions_dict.get("has_suggestions", False),
+                total_available=suggestions_dict.get("total_available", 0),
+                suggestions=[
+                    SuggestionItem(**s) for s in suggestions_dict.get("suggestions", [])
+                ],
+                message=suggestions_dict.get("message", "")
             )
         
         return ChatResponse(
             answer=result.get("answer", ""),
             sources=result.get("sources", []),
             query=result.get("query", request.query),
-            error=None
+            error=None,
+            suggestions=suggestions_data,
+            total_sources=result.get("total_sources", len(result.get("sources", []))),
+            no_results=result.get("no_results", False)
         )
         
     except ValueError as e:

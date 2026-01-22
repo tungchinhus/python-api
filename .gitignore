@@ -111,6 +111,24 @@ artifacts/
 .env.*.local
 *.env
 
+# Files chứa hardcoded API keys
+**/*.bat
+**/*.ps1
+**/check-*.py
+**/test_*.py
+!**/*.bat.example
+!**/*.ps1.example
+
+# Configuration files with sensitive data
+appsettings.json
+appsettings.*.json
+!appsettings.json.example
+!appsettings.*.json.example
+
+# Test và debug files có thể chứa API keys
+**/debug_*.py
+**/test_*.py
+
 # Configuration files with sensitive data (uncomment if needed)
 # appsettings.json
 # appsettings.*.json

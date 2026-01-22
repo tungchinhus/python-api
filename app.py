@@ -14,6 +14,7 @@ from sentence_transformers import SentenceTransformer
 import logging
 import pyodbc
 import os
+import sys
 from dotenv import load_dotenv
 import json
 
@@ -220,21 +221,53 @@ def search_vector():
                     "error": f"Bảng '{table_name}' không tồn tại trong database."
                 }), 400
             
-            # Check if table has Embedding column
+            # Check if table has Embedding column và kiểm tra type
             cursor.execute(f"""
-                SELECT COUNT(*) AS HasEmbeddingColumn
+                SELECT 
+                    COUNT(*) AS HasEmbeddingColumn,
+                    TYPE_NAME(system_type_id) AS ColumnType
                 FROM sys.columns
                 WHERE object_id = OBJECT_ID('dbo.[{table_name}]')
                 AND name = 'Embedding'
             """)
-            has_embedding_column = cursor.fetchone()[0] > 0
+            embedding_check = cursor.fetchone()
+            has_embedding_column = embedding_check[0] > 0 if embedding_check else False
+            embedding_type = embedding_check[1] if embedding_check and embedding_check[1] else None
+            
+            # Kiểm tra SQL Server version có hỗ trợ VECTOR không
+            cursor.execute("SELECT CAST(SERVERPROPERTY('ProductVersion') AS VARCHAR(50))")
+            sql_version = cursor.fetchone()[0]
+            version_major = int(sql_version.split('.')[0]) if sql_version else 0
+            supports_vector = version_major >= 16  # SQL Server 2025+
+            
+            # Kiểm tra Embedding column có phải VECTOR type không
+            is_vector_type = embedding_type and embedding_type.lower() == 'vector'
+            can_use_vector_distance = supports_vector and is_vector_type
+            
+            logger.info(f"SQL Server version: {sql_version} (major: {version_major}), supports VECTOR: {supports_vector}")
+            if has_embedding_column:
+                logger.info(f"Embedding column type: {embedding_type}, is VECTOR: {is_vector_type}")
+                logger.info(f"Can use VECTOR_DISTANCE: {can_use_vector_distance}")
+            
+            # Nếu không thể dùng VECTOR_DISTANCE, fallback về VectorJson
+            if has_embedding_column and not can_use_vector_distance:
+                logger.info(f"⚠️ Cannot use VECTOR_DISTANCE (version={version_major}, type={embedding_type}). Falling back to VectorJson method.")
+                has_embedding_column = False  # Force fallback to VectorJson
             
             # Check total records
             cursor.execute(f"SELECT COUNT(*) AS TotalRecords FROM dbo.[{table_name}]")
             total_records = cursor.fetchone()[0]
             logger.info(f"Table '{table_name}' has {total_records} total records")
             
-            if not has_embedding_column:
+            if not has_embedding_column or not can_use_vector_distance:
+                # #region agent log
+                import json
+                try:
+                    with open(r'c:\MyData\projects\THITHI\THIHI_AI\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"H2","location":"app.py:search_vector","message":"Using VectorJson fallback","data":{"has_embedding_column":has_embedding_column,"can_use_vector_distance":can_use_vector_distance,"embedding_type":embedding_type},"timestamp":int(__import__('time').time()*1000)})+'\n')
+                except: pass
+                # #endregion
+                
                 # Check for VectorJson column
                 cursor.execute(f"""
                     SELECT COUNT(*) AS HasVectorJsonColumn
@@ -270,7 +303,15 @@ def search_vector():
                         "warning": f"Bảng '{table_name}' có {total_records} bản ghi nhưng không có VectorJson. Cần re-ingest dữ liệu với embeddings."
                     }), 200
                 
-                # Use VectorJson fallback
+                # Use VectorJson fallback - tính cosine similarity trong Python
+                # #region agent log
+                import json as json_log
+                try:
+                    with open(r'c:\MyData\projects\THITHI\THIHI_AI\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                        f.write(json_log.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"H2","location":"app.py:search_vector","message":"Starting VectorJson search","data":{"query_embedding_len":len(query_embedding),"top_n":top_n,"similarity_threshold":similarity_threshold},"timestamp":int(__import__('time').time()*1000)})+'\n')
+                except: pass
+                # #endregion
+                
                 cursor.execute(f"""
                     SELECT TOP ({top_n * 4}) ID, Content, VectorJson
                     FROM dbo.[{table_name}]
@@ -279,7 +320,9 @@ def search_vector():
                 
                 all_results = []
                 dimension_mismatches = 0
+                processed_count = 0
                 for row in cursor.fetchall():
+                    processed_count += 1
                     try:
                         stored_vector = json.loads(row[2]) if row[2] else []
                         if not stored_vector:
@@ -289,6 +332,12 @@ def search_vector():
                             logger.debug(f"Dimension mismatch: stored={len(stored_vector)}, query={len(query_embedding)}")
                             continue
                         similarity = cosine_similarity(query_embedding, stored_vector)
+                        # #region agent log
+                        try:
+                            with open(r'c:\MyData\projects\THITHI\THIHI_AI\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                                f.write(json_log.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"H2","location":"app.py:search_vector","message":"Calculated similarity","data":{"id":row[0],"similarity":similarity,"above_threshold":similarity >= similarity_threshold},"timestamp":int(__import__('time').time()*1000)})+'\n')
+                        except: pass
+                        # #endregion
                         if similarity >= similarity_threshold:
                             all_results.append({
                                 "id": row[0],
@@ -299,6 +348,13 @@ def search_vector():
                         logger.warn(f"Error parsing vector for ID {row[0]}: {e}")
                         continue
                 
+                # #region agent log
+                try:
+                    with open(r'c:\MyData\projects\THITHI\THIHI_AI\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                        f.write(json_log.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"H2","location":"app.py:search_vector","message":"VectorJson search complete","data":{"processed_count":processed_count,"dimension_mismatches":dimension_mismatches,"results_count":len(all_results)},"timestamp":int(__import__('time').time()*1000)})+'\n')
+                except: pass
+                # #endregion
+                
                 if dimension_mismatches > 0:
                     logger.warn(f"Found {dimension_mismatches} records with dimension mismatch (stored={len(stored_vector) if stored_vector else 'unknown'}, query={len(query_embedding)})")
                 
@@ -308,6 +364,14 @@ def search_vector():
                 logger.info(f"Found {len(results)} results after filtering (threshold={similarity_threshold}, checked {len(all_results)} candidates)")
                 
             else:
+                # #region agent log
+                import json as json_log
+                try:
+                    with open(r'c:\MyData\projects\THITHI\THIHI_AI\.cursor\debug.log', 'a', encoding='utf-8') as f:
+                        f.write(json_log.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"H3","location":"app.py:search_vector","message":"Using VECTOR_DISTANCE","data":{"embedding_type":embedding_type,"sql_version":sql_version,"version_major":version_major},"timestamp":int(__import__('time').time()*1000)})+'\n')
+                except: pass
+                # #endregion
+                
                 # Check records with Embedding
                 cursor.execute(f"""
                     SELECT COUNT(*) AS Count
@@ -328,7 +392,10 @@ def search_vector():
                     }), 200
                 
                 # Use VECTOR_DISTANCE
-                vector_string = "[" + ",".join(str(v) for v in query_embedding) + "]"
+                # Format vector string đúng cách cho SQL Server 2025
+                # SQL Server yêu cầu format: [value1,value2,value3,...] 
+                # Dùng scientific notation cho số nhỏ/lớn, decimal cho số bình thường
+                vector_string = "[" + ",".join(f"{v:.8e}" if abs(v) < 0.0001 or abs(v) > 1000 else f"{v:.8f}" for v in query_embedding) + "]"
                 
                 # Detect content column name
                 cursor.execute(f"""
@@ -340,20 +407,68 @@ def search_vector():
                 content_column = content_col_result[0] if content_col_result else 'Content'
                 logger.info(f"Using content column: {content_column}")
                 
-                # SQL Server doesn't support parameterized queries with VECTOR type
-                # Embed vector string directly (safe - not user input, generated from AI)
-                search_sql = f"""
-                    SELECT TOP ({top_n})
-                        ID,
-                        [{content_column}] AS Content,
-                        (1.0 - VECTOR_DISTANCE(Embedding, CAST('{vector_string}' AS VECTOR({EMBEDDING_DIMENSION})), 'COSINE')) AS Similarity
-                    FROM dbo.[{table_name}]
-                    WHERE Embedding IS NOT NULL
-                    ORDER BY VECTOR_DISTANCE(Embedding, CAST('{vector_string}' AS VECTOR({EMBEDDING_DIMENSION})), 'COSINE') ASC
-                """
+                # SQL Server 2025 VECTOR_DISTANCE
+                # Thử nhiều cách format vector string
+                # Cách 1: Dùng DECLARE với format đơn giản (không scientific notation)
+                vector_simple = "[" + ",".join(str(v) for v in query_embedding) + "]"
+                vector_escaped = vector_simple.replace("'", "''")
                 
+                # Thử query với format đơn giản trước
                 try:
-                    cursor.execute(search_sql)
+                    try:
+                        search_sql = f"""
+                            DECLARE @queryVector NVARCHAR(MAX) = '{vector_escaped}';
+                            DECLARE @queryVectorTyped VECTOR({EMBEDDING_DIMENSION}) = CAST(@queryVector AS VECTOR({EMBEDDING_DIMENSION}));
+                            SELECT TOP ({top_n})
+                                ID,
+                                [{content_column}] AS Content,
+                                (1.0 - VECTOR_DISTANCE(Embedding, @queryVectorTyped, 'COSINE')) AS Similarity
+                            FROM dbo.[{table_name}]
+                            WHERE Embedding IS NOT NULL
+                            ORDER BY VECTOR_DISTANCE(Embedding, @queryVectorTyped, 'COSINE') ASC
+                        """
+                        cursor.execute(search_sql)
+                    except Exception as e1:
+                        logger.warning(f"First VECTOR_DISTANCE attempt failed: {e1}")
+                        # Thử cách 2: Dùng CAST trực tiếp trong VECTOR_DISTANCE
+                        try:
+                            search_sql = f"""
+                                DECLARE @queryVectorStr NVARCHAR(MAX) = '{vector_escaped}';
+                                SELECT TOP ({top_n})
+                                    ID,
+                                    [{content_column}] AS Content,
+                                    (1.0 - VECTOR_DISTANCE(Embedding, CAST(@queryVectorStr AS VECTOR({EMBEDDING_DIMENSION})), 'COSINE')) AS Similarity
+                                FROM dbo.[{table_name}]
+                                WHERE Embedding IS NOT NULL
+                                ORDER BY VECTOR_DISTANCE(Embedding, CAST(@queryVectorStr AS VECTOR({EMBEDDING_DIMENSION})), 'COSINE') ASC
+                            """
+                            cursor.execute(search_sql)
+                        except Exception as e2:
+                            logger.warning(f"Second VECTOR_DISTANCE attempt failed: {e2}")
+                            # Thử cách 3: Format đơn giản hơn (không scientific notation)
+                            try:
+                                vector_simple = "[" + ",".join(f"{v:.6f}" for v in query_embedding) + "]"
+                                vector_escaped_simple = vector_simple.replace("'", "''")
+                                
+                                search_sql = f"""
+                                    DECLARE @queryVector NVARCHAR(MAX) = '{vector_escaped_simple}';
+                                    DECLARE @queryVectorTyped VECTOR({EMBEDDING_DIMENSION}) = CAST(@queryVector AS VECTOR({EMBEDDING_DIMENSION}));
+                                    SELECT TOP ({top_n})
+                                        ID,
+                                        [{content_column}] AS Content,
+                                        (1.0 - VECTOR_DISTANCE(Embedding, @queryVectorTyped, 'COSINE')) AS Similarity
+                                    FROM dbo.[{table_name}]
+                                    WHERE Embedding IS NOT NULL
+                                    ORDER BY VECTOR_DISTANCE(Embedding, @queryVectorTyped, 'COSINE') ASC
+                                """
+                                cursor.execute(search_sql)
+                            except Exception as e3:
+                                logger.error(f"All VECTOR_DISTANCE attempts failed. Last error: {e3}")
+                                logger.error("Falling back to VectorJson method...")
+                                # Fallback: Dùng VectorJson nếu có
+                                raise e3
+                    
+                    # Fetch results sau khi execute thành công
                     raw_results = cursor.fetchall()
                     logger.info(f"SQL query returned {len(raw_results)} raw results")
                     
@@ -389,8 +504,21 @@ def search_vector():
         error_trace = traceback.format_exc()
         logger.error(f"❌ Error in vector search: {e}")
         logger.error(f"❌ Traceback: {error_trace}")
+        
+        # Trả về error message chi tiết hơn
+        error_message = f"Lỗi khi tìm kiếm: {str(e)}"
+        
+        # Kiểm tra các lỗi phổ biến
+        if "model" in str(e).lower() or "encode" in str(e).lower():
+            error_message += " (Lỗi với embedding model)"
+        elif "sql" in str(e).lower() or "connection" in str(e).lower():
+            error_message += " (Lỗi kết nối SQL Server)"
+        elif "table" in str(e).lower():
+            error_message += " (Lỗi với bảng database)"
+        
         return jsonify({
-            "error": f"Lỗi khi tìm kiếm: {str(e)}",
+            "error": error_message,
+            "error_type": type(e).__name__,
             "details": error_trace if os.getenv("DEBUG", "false").lower() == "true" else None
         }), 500
 
@@ -407,5 +535,30 @@ def search_health():
 if __name__ == '__main__':
     # Chạy server trên port 5005 (tránh trùng với .NET backend 5000)
     port = int(os.getenv("PORT", "5005"))
-    logger.info(f"Starting Python Vectorize API on port {port}...")
-    app.run(host='0.0.0.0', port=port, debug=True)
+    debug_mode = os.getenv("DEBUG", "true").lower() == "true"
+    
+    logger.info("=" * 60)
+    logger.info("Starting Python Vectorize API")
+    logger.info("=" * 60)
+    logger.info(f"Port: {port}")
+    logger.info(f"Debug mode: {debug_mode}")
+    logger.info(f"Model loaded: {model is not None}")
+    
+    if model is None:
+        logger.warning("⚠️ WARNING: Model is not loaded! API may not work correctly.")
+        logger.warning("   Check logs above for model loading errors.")
+        logger.warning("   Run: python debug_api.py to diagnose")
+    else:
+        logger.info(f"✅ Model ready: all-mpnet-base-v2 ({EMBEDDING_DIMENSION} dimensions)")
+    
+    logger.info("=" * 60)
+    logger.info(f"API will be available at: http://0.0.0.0:{port}")
+    logger.info("=" * 60)
+    
+    try:
+        app.run(host='0.0.0.0', port=port, debug=debug_mode)
+    except Exception as e:
+        logger.error(f"❌ Failed to start server: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
